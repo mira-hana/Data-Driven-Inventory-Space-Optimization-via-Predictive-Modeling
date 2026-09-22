@@ -29,7 +29,7 @@ The project proposes practical actions such as better discount control, profit-b
 
 The main goal is to turn raw business data into **practical insights that can support better inventory, pricing, and warehouse decisions**.
 
-*Note: Full project details can be found in the section below*
+*Note: Full project details can be found in the link below*
 
 https://drive.google.com/file/d/1szvIsakFk5ut0stOLvioS8yS8hE7mw5X/view?usp=sharing
 
