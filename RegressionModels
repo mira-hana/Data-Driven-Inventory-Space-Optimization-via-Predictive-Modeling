@@ -36,7 +36,7 @@ file_name = list(uploaded.keys())[0]
 df = pd.read_csv(io.BytesIO(uploaded[file_name]))
 df.columns = df.columns.str.strip()
 
-# 2. STRUCTURAL PREPARATION
+# 2. CHRONOLOGICAL STRUCTURAL PREPARATION
 df['Order Date'] = pd.to_datetime(df['Order Date'])
 df = df.sort_values('Order Date').reset_index(drop=True)
 
@@ -86,7 +86,7 @@ for profile_name, profile in feature_profiles.items():
     p_lower = y_train.quantile(0.01)
     p_upper = y_train.quantile(0.99)
 
-    print(f" [{profile_name}] Training target distribution clipping bounds calculated:")
+    print(f"ℹ️ [{profile_name}] Training target distribution clipping bounds calculated:")
     print(f"    Lower limit (0.01 Quantile): {p_lower:.4f}")
     print(f"    Upper limit (0.99 Quantile): {p_upper:.4f}")
 
@@ -104,42 +104,45 @@ for profile_name, profile in feature_profiles.items():
         ])
 
     models_config = {
-        "Baseline Naive Model": {
-            "model": DummyRegressor(strategy='mean'),
-            "params": {}
-        },
-        "ElasticNet Linear Regression": {
-            "model": TransformedTargetRegressor(
-                regressor=ElasticNet(random_state=42),
-                transformer=PowerTransformer(method='yeo-johnson')
-            ),
-            "params": {
-                'regressor__regressor__alpha': [0.05, 0.5],
-                'regressor__regressor__l1_ratio': [0.2, 0.7]
-            }
-        },
-        "Random Forest Regressor": {
-            "model": TransformedTargetRegressor(
-                regressor=RandomForestRegressor(random_state=42),
-                transformer=PowerTransformer(method='yeo-johnson')
-            ),
-            "params": {
-                'regressor__regressor__n_estimators': [100],
-                'regressor__regressor__max_depth': [10, 15]
-            }
-        },
-        "Gradient Boosting Regressor": {
-            "model": TransformedTargetRegressor(
-                regressor=GradientBoostingRegressor(random_state=42, validation_fraction=0.1, n_iter_no_change=10),
-                transformer=PowerTransformer(method='yeo-johnson')
-            ),
-            "params": {
-                'regressor__regressor__n_estimators': [100, 150],
-                'regressor__regressor__learning_rate': [0.05, 0.1],
-                'regressor__regressor__max_depth': [3, 4]
+            "Baseline Naive Model": {
+                "model": DummyRegressor(strategy='mean'),
+                "params": {}
+            },
+            "ElasticNet Linear Regression": {
+                "model": TransformedTargetRegressor(
+                    regressor=ElasticNet(random_state=42),
+                    transformer=PowerTransformer(method='yeo-johnson')
+                ),
+                # EXPANDED: Pushed alpha higher, and allowed l1_ratio to go lower toward pure Ridge (0.0)
+                "params": {
+                    'regressor__regressor__alpha': [0.1, 0.5, 1.0, 5.0],
+                    'regressor__regressor__l1_ratio': [0.01, 0.1, 0.2, 0.4]
+                }
+            },
+            "Random Forest Regressor": {
+                "model": TransformedTargetRegressor(
+                    regressor=RandomForestRegressor(random_state=42),
+                    transformer=PowerTransformer(method='yeo-johnson')
+                ),
+                # EXPANDED: Testing a cleaner spectrum around your winning spots (10 and 15)
+                "params": {
+                    'regressor__regressor__n_estimators': [100],
+                    'regressor__regressor__max_depth': [8, 10, 12, 15, 18]
+                }
+            },
+            "Gradient Boosting Regressor": {
+                "model": TransformedTargetRegressor(
+                    regressor=GradientBoostingRegressor(random_state=42, validation_fraction=0.1, n_iter_no_change=10),
+                    transformer=PowerTransformer(method='yeo-johnson')
+                ),
+                # EXPANDED: Providing a smoother bridge between 0.05 and 0.1, plus deeper tree options
+                "params": {
+                    'regressor__regressor__n_estimators': [100, 150, 200],
+                    'regressor__regressor__learning_rate': [0.03, 0.05, 0.08, 0.1],
+                    'regressor__regressor__max_depth': [3, 4, 5]
+                }
             }
         }
-    }
 
     profile_results = {}
 
@@ -150,6 +153,9 @@ for profile_name, profile in feature_profiles.items():
 
         grid = GridSearchCV(pipeline, config['params'], cv=cv_strategy, scoring='neg_mean_absolute_error', n_jobs=-1)
         grid.fit(X_train, y_train_clipped)
+
+        # ADDED HERE: Print optimized values live as the script runs
+        print(f"Optimized parameters for {name} ({profile_name}): {grid.best_params_}\n")
 
         best_model = grid.best_estimator_
         y_pred_model = best_model.predict(X_test)
@@ -303,7 +309,7 @@ print(f"\n→ Champion Stability Summary Across Dynamic Splits:")
 print(f"   Mean R² : {mean_robust_r2:.4f} ± {std_robust_r2:.4f}")
 print(f"   Range   : {robust_df['R2'].min():.4f} — {robust_df['R2'].max():.4f}")
 
-robustness_verdict = "Noticeable instability — consider further parameter regularization or feature pruning."
+robustness_verdict = "⚠️ Noticeable instability — consider further parameter regularization or feature pruning."
 if std_robust_r2 < 0.06:
     robustness_verdict = "Model appears ROBUST across different random initializations and temporal window variants."
 print(robustness_verdict)
@@ -340,7 +346,6 @@ plt.savefig(feature_chart_filename, dpi=300)
 print(f"✔ Successfully saved feature importance bar chart to disk: '{feature_chart_filename}'")
 plt.close() # Prevents canvas overlapping downstream
 
-
 # 7. LEAKAGE-FREE CATEGORICAL MICRO STATISTICS
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -349,15 +354,32 @@ print("\n" + "#"*60)
 print("##### 3. HISTORICAL DRIFT MICRO DIAGNOSTIC MATRIX #####")
 print("#"*60)
 
-micro_registry = {}
-deep_dive_targets = ['Category', 'Sub-Category', 'State']
+# --- DYNAMIC TARGET SELECTION VIA PERMUTATION IMPORTANCE ---
+# Check which of our target dimensions exist in the results_df from permutation importance
+potential_targets = ['Category', 'Sub-Category', 'State']
+available_drivers = results_df[results_df['Attribute'].isin(potential_targets)].copy()
 
-# --- SPLIT DATA HOLDERS FOR THE TWO SEPARATE TABLES ---
+# Sort them dynamically based on importance (assuming results_df is sorted by highest importance)
+# If results_df is not pre-sorted, uncomment the line below:
+# available_drivers = available_drivers.sort_values(by='Importance', ascending=False)
+
+deep_dive_targets = available_drivers['Attribute'].tolist()
+
+# Fallback in case none of the targets made it into the importance dataframe
+if not deep_dive_targets:
+    deep_dive_targets = potential_targets
+
+micro_registry = {}
 profitable_rows = []
 loss_rows = []
 
 for target_cat in deep_dive_targets:
     train_df_context = df.iloc[:global_split_idx]
+
+    # Ensure the column exists in the dataframe before processing
+    if target_cat not in train_df_context.columns:
+        continue
+
     cat_summary = train_df_context.groupby(target_cat)[base_target_col].agg(['mean', 'median', 'std', 'count']).reset_index()
     cat_summary = cat_summary[cat_summary['count'] > 5]
 
@@ -393,7 +415,11 @@ loss_df = pd.DataFrame(loss_rows, columns=columns_layout)
 
 # --- Helper function to avoid code duplication and render identical table styles ---
 def render_styled_table(data_df, title, filename, header_color):
-    fig, ax = plt.subplots(figsize=(11, 5.5)) # Slightly reduced height since rows are cut in half
+    if data_df.empty:
+        print(f"⚠ Skipping table generation for '{title}': DataFrame is empty.")
+        return
+
+    fig, ax = plt.subplots(figsize=(11, 5.5))
     ax.axis('off')
     ax.axis('tight')
 
@@ -426,26 +452,28 @@ def render_styled_table(data_df, title, filename, header_color):
     print(f"✔ Successfully saved: '{filename}'")
 
 # --- GENERATE THE TWO DISTINCT GRAPHICAL TABLES ---
-# Table 1: Top 3 Profitable (Deep Emerald/Teal header)
 render_styled_table(
     profitable_df,
-    'Top 3 Profitable Operational Segments',
+    'Top 3 Profitable Operational Segments (Ranked by Permutation Importance Order)',
     'top_profitable_segments.png',
     '#1a3636'
 )
 
-# Table 2: Top 3 Loss-Leading (Subdued Dark Crimson header to reflect losses)
 render_styled_table(
     loss_df,
-    'Top 3 Loss-Leading Operational Segments',
+    'Top 3 Loss-Leading Operational Segments (Ranked by Permutation Importance Order)',
     'top_loss_segments.png',
     '#4a1c1c'
 )
 
-
 # 8. LIVE DATA-DRIVEN INSIGHTS (CAUSALLY HEDGED)
-top_driver = results_df.iloc[0]['Attribute']
-second_driver = results_df.iloc[1]['Attribute']
+top_driver = results_df.iloc[0]['Attribute'] if len(results_df) > 0 else "N/A"
+second_driver = results_df.iloc[1]['Attribute'] if len(results_df) > 1 else "N/A"
+
+# Dynamically extract values for the business summary to prevent KeyErrors
+sub_cat_loss = micro_registry.get('Sub-Category_top_loss', 'N/A')
+sub_cat_win = micro_registry.get('Sub-Category_top_win', 'N/A')
+state_loss = micro_registry.get('State_top_loss', 'N/A')
 
 print("\n" + "="*60)
 print("##### 4. REAL-TIME OPERATIONS BUSINESS INSIGHTS SUMMARY #####")
@@ -454,8 +482,8 @@ print(f"* NAIVE BENCHMARK VERIFICATION: Machine learning estimators consistently
 print(f"* DATA METHODOLOGY VALIDATION: Stripping proxy indicators (Sales) unmasks the genuine structural patterns of the store, tracking a calibrated test holdout R² score of {profile_b_ml[champion_strategy_name]['R2']:.4f}.")
 print(f"* TIMELINE ROBUSTNESS METRICS: Anti-luck validation evaluations indicate steady performance trends, tracking a mean R² score metric of {mean_robust_r2:.4f} ± {std_robust_r2:.4f} over multiple random initializations and block shifts.")
 print(f"* STATISTICAL ASSOCIATIONS: Feature permutations demonstrate that variations in retail profit lines are most strongly correlated with historical '{top_driver}' configurations, followed by '{second_driver}' components.")
-print(f"* SEGMENT RISK EXPOSURE: Granular audits show that the allocation of resources to '{micro_registry['Sub-Category_top_loss']}' is structurally associated with margin degradation during the training timeframe, contrasting with the solid yields linked to '{micro_registry['Sub-Category_top_win']}'.")
-print(f"* TERRITORIAL EFFICIENCY PATHS: Operational records indicate that distribution layouts situated inside the state of '{micro_registry['State_top_loss']}' are indicative of systematic margin variance, posing distinct optimization opportunities.")
+print(f"* SEGMENT RISK EXPOSURE: Granular audits show that the allocation of resources to '{sub_cat_loss}' is structurally associated with margin degradation during the training timeframe, contrasting with the solid yields linked to '{sub_cat_win}'.")
+print(f"* TERRITORIAL EFFICIENCY PATHS: Operational records indicate that distribution layouts situated inside the state of '{state_loss}' are indicative of systematic margin variance, posing distinct optimization opportunities.")
 print("="*60)
 
 # 9. FINAL RESIDUAL SCATTER ANALYSIS
